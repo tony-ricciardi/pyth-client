@@ -1,9 +1,9 @@
 #pragma once
 
-#include <stdbool.h>
-
 #ifdef __cplusplus
 extern "C" {
+#else
+#include <stdbool.h>
 #endif
 
 // magic number at head of account
@@ -22,7 +22,7 @@ extern "C" {
 #define PC_COMP_SIZE         32
 #define PC_MAX_NUM_DECIMALS  16
 #define PC_PROD_ACC_SIZE    512
-#define PC_EXP_DECAY         -9
+#define PC_EXP_DECAY       (-9)
 
 #ifndef PC_HEAP_START
 #define PC_HEAP_START (0x300000000)
