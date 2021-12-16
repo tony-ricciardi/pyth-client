@@ -4,7 +4,7 @@ import numpy as np
 NS_PER_YEAR = 365 * 24 * 60 * 60 * 10 ** 9
 
 
-class candle(object):
+class Candle:
 
   def __init__(self, time, candle_width_minutes):
     self._width_ns = int(candle_width_minutes * 60 * 10 ** 9)
@@ -30,18 +30,20 @@ class candle(object):
     return time // self._width_ns * self._width_ns == self.starttime
 
 
-class VolatilityModel(object):
+class VolatilityModel:
+  """
+  volatility model works by aggregating tick level trade data into candles containing high/low price of trades
+  in that candle, along with start and end times of the candle.
+  Empty candles (where we have no fills) are NOT included and the model skips over them, using the last
+  "ncandles" populated candles to make its volatility estimate
+  candle_width_minute is the width in minutes of the aggregation "candles" used in volatility estimate
+  ncandles is the number of trailing candles to average over in volatility estimate
+  initial_volatility is the volatility to use (a high upper limit) when the model starts up and doesn't have
+  any data to use to begin with. defaults to 100% annualized which should be fine for all products. It is
+  really only used at startup
+  """
 
   def __init__(self, candle_width_minutes, ncandles, initial_volatility = 1.0):
-    # volatility model works by aggregating tick level trade data into candles containing high/low price of trades
-    # in that candle, along with start and end times of the candle.
-    # Empty candles (where we have no fills) are NOT included and the model skips over them, using the last
-    # "ncandles" populated candles to make its volatility estimate
-    # candle_width_minute is the width in minutes of the aggregation "candles" used in volatility estimate
-    # ncandles is the number of trailing candles to average over in volatility estimate
-    # initial_volatility is the volatility to use (a high upper limit) when the model starts up and doesn't have
-    # any data to use to begin with. defaults to 100% annualized which should be fine for all products. It is
-    # really only used at startup
     self._candlelist = []
     self._candle_width_minutes = candle_width_minutes
     self._ncandles = ncandles
@@ -49,7 +51,7 @@ class VolatilityModel(object):
 
   def add_trade(self, time, price):
     if not (self._candlelist and self._candlelist[0].check_time(time)):
-      c = candle(time, self._candle_width_minutes)
+      c = Candle(time, self._candle_width_minutes)
       self._candlelist = [c] + self._candlelist[:self._ncandles]
     self._candlelist[0].add_price(price)
 
@@ -69,7 +71,7 @@ class VolatilityModel(object):
     return np.sqrt(v)
 
 
-class ConfidenceInterval(object):
+class ConfidenceInterval:
 
   def __init__(self, candle_width_minutes, ncandles, min_confidence_interval):
     self.vol_model = VolatilityModel(candle_width_minutes, ncandles)
@@ -104,26 +106,28 @@ class ConfidenceInterval(object):
     return confidence_interval_price
 
 
-class PricingModel(object):
+class PricingModel:
+  """
+  PricingModel has a couple of free parameters
 
-  # PricingModel has a couple of free parameters
-  #
-  # candle_width_minutes
-  # ncandles
-  #       are both passed into Volatility model above to set how wide the candlestick aggregation should
-  #       be and how many candlesticks of history to use to estimate volatility. 1 minute candles and
-  #       ncandles=20 seem to give reasonable results for the symbols I've looked at
-  #
-  # min_confidence_interval
-  #       is a hardcoded minimum confidence interval to use, to protect against the volatility model returning
-  #       too low a value (for instance if we ONLY fill at a single price for a long time because we are ONLY
-  #       working orders at that one price, volatility model could read 0...). This is going to want to be
-  #       configured per symbol potentially, and should relate to the typical spread in the market.
-  #
-  # timeout_seconds
-  #       pricing model reports status "Trading" with price=last_trades_price and volatility * sqrt time
-  #       increasing confidence interval on each slot until timeout_seconds have elapsed without a new trade
-  #       at that point we publish status UNKNOWN. I think ~60s is a reasonable number to use for this
+  candle_width_minutes:
+  ncandles:
+    are both passed into Volatility model above to set how wide the candlestick aggregation should
+    be and how many candlesticks of history to use to estimate volatility. 1 minute candles and
+    ncandles=20 seem to give reasonable results for the symbols I've looked at
+
+  min_confidence_interval:
+    is a hardcoded minimum confidence interval to use, to protect against the volatility model returning
+    too low a value (for instance if we ONLY fill at a single price for a long time because we are ONLY
+    working orders at that one price, volatility model could read 0...). This is going to want to be
+    configured per symbol potentially, and should relate to the typical spread in the market.
+
+  timeout_seconds:
+    pricing model reports status "Trading" with price=last_trades_price and volatility * sqrt time
+    increasing confidence interval on each slot until timeout_seconds have elapsed without a new trade
+    at that point we publish status UNKNOWN. I think ~60s is a reasonable number to use for this
+  """
+
   def __init__(self, candle_width_minutes, ncandles, min_confidence_interval, timeout_seconds):
     self.confidence_model = ConfidenceInterval(candle_width_minutes, ncandles, min_confidence_interval)
     self.timeout_ns = timeout_seconds * 10 ** 9
