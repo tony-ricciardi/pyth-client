@@ -1,33 +1,93 @@
+from pyth.types import *
+
+from collections import deque
+from typing import Deque, Optional
+
 import numpy as np
 
 
-NS_PER_YEAR = 365 * 24 * 60 * 60 * 10 ** 9
+__all__ = [
+  'Candle',
+  'ConfidenceModel',
+  'HighLowTracker',
+  'PricingModel',
+  'VolatilityModel',
+]
+
+
+class HighLowTracker:
+
+  def __init__(self):
+    self._range: Optional[PriceRange] = None
+
+  @property
+  def high(self) -> Price:
+    return self._range.high
+
+  @property
+  def low(self) -> Price:
+    return self._range.low
+
+  @property
+  def spread(self) -> Optional[PriceDiff]:
+    return None if self._range is None else (self.high - self.low)
+
+  def add_price(self, price: Price):
+    if self._range is None:
+      high = low = price
+    else:
+      high = max(self.high, price)
+      low = min(self.low, price)
+    self._range = PriceRange(high=high, low=low)
+
+  def reset(self):
+    self._range = None
 
 
 class Candle:
 
-  def __init__(self, time, candle_width_minutes):
-    self._width_ns = int(candle_width_minutes * 60 * 10 ** 9)
-    self.starttime = time // self._width_ns * self._width_ns
-    self.endtime = self.starttime + self._width_ns
-    self.open = None
-    self.high = None
-    self.low = None
-    self.close = None
-    self.ntrades = 0
+  def __init__(self, start_ts: Timestamp, *, width_ns: NSecs):
 
-  def add_price(self, price):
-    if self.open is None:
-      self.open = price
-    if self.high is None or price > self.high:
-      self.high = price
-    if self.low is None or price < self.low:
-      self.low = price
-    self.close = price
-    self.ntrades += 1
+    self._width_ns = width_ns
+    start_ts = self.floor_ts(start_ts)
+    end_ts = inc_timestamp(start_ts, self._width_ns)
+    self._time_range = TimeRange(start_ts, end_ts)
+    self._price_range = HighLowTracker()
 
-  def check_time(self, time):
-    return time // self._width_ns * self._width_ns == self.starttime
+    assert self.width_ns > 0, self.width_ns
+    assert self.floor_ts(self.start_ts) == self.start_ts
+    assert self.floor_ts(self.end_ts) == self.end_ts
+    assert self.contains_ts(self.start_ts)
+    assert not self.contains_ts(self.end_ts)
+
+  @property
+  def start_ts(self) -> Timestamp:
+    return self._time_range.start
+
+  @property
+  def end_ts(self) -> Timestamp:
+    return self._time_range.end
+
+  @property
+  def width_ns(self) -> NSecs:
+    return self._width_ns
+
+  @property
+  def high(self) -> Price:
+    return self._price_range.high
+
+  @property
+  def low(self) -> Price:
+    return self._price_range.low
+
+  def add_price(self, price: Price):
+    self._price_range.add_price(price)
+
+  def floor_ts(self, ts: Timestamp) -> Timestamp:
+    return Timestamp(NSecs(ts // self._width_ns * self._width_ns))
+
+  def contains_ts(self, ts: Timestamp) -> bool:
+    return self.floor_ts(ts) == self.start_ts
 
 
 class VolatilityModel:
@@ -43,67 +103,141 @@ class VolatilityModel:
   really only used at startup
   """
 
-  def __init__(self, candle_width_minutes, ncandles, initial_volatility = 1.0):
-    self._candlelist = []
-    self._candle_width_minutes = candle_width_minutes
-    self._ncandles = ncandles
-    self._initial_volatility = initial_volatility
-
-  def add_trade(self, time, price):
-    if not (self._candlelist and self._candlelist[0].check_time(time)):
-      c = Candle(time, self._candle_width_minutes)
-      self._candlelist = [c] + self._candlelist[:self._ncandles]
-    self._candlelist[0].add_price(price)
+  def __init__(
+      self,
+      *,
+      trail_len: Count,
+      width_ns: NSecs,
+      default_vol: float = None,
+  ):
+    if default_vol is None:
+      default_vol = 1.0
+    assert trail_len > 0, trail_len
+    self._candles: Deque[Candle] = deque()
+    self._width_ns = width_ns
+    self._trail_len = trail_len
+    self._default_vol = default_vol
+    self._last_trade: Optional[PriceTime] = None
 
   @property
-  def volatility(self):
-    if len(self._candlelist) < self._ncandles:
-      return self._initial_volatility
-    highs = np.zeros(len(self._candlelist) - 1)
-    lows = np.zeros(len(self._candlelist) - 1)
-    dts = np.zeros(len(self._candlelist) - 1)
-    for i in range(len(self._candlelist) - 1):
-      highs[i] = max(self._candlelist[i].high, self._candlelist[i + 1].high)
-      lows[i] = min(self._candlelist[i].low, self._candlelist[i + 1].low)
-      dts[i] = self._candlelist[i].endtime - self._candlelist[i + 1].starttime
-    assert np.sum(dts) > 0
-    v = 1.0 / (4.0 * np.log(2)) * np.sum(np.log(highs / lows) ** 2) * NS_PER_YEAR / np.sum(dts)
-    return np.sqrt(v)
+  def last_trade(self) -> Optional[PriceTime]:
+    return self._last_trade
+
+  @property
+  def front(self) -> Optional[Candle]:
+    return self._candles[0] if self._candles else None
+
+  def is_full(self) -> bool:
+    assert len(self._candles) <= self._trail_len + 1
+    return len(self._candles) >= self._trail_len + 1
+
+  def _start_candle(self, ts: Timestamp):
+    if self._candles:
+      if self.is_full():
+        self._candles.pop()
+      assert self.front.floor_ts(ts) >= self.front.end_ts
+
+    candle = Candle(start_ts=ts, width_ns=self._width_ns)
+    self._candles.appendleft(candle)
+
+  def add_trade(self, trade: PriceTime):
+    if not self._candles or not self.front.contains_ts(trade.ts):
+      self._start_candle(trade.ts)
+
+    assert self.front.contains_ts(trade.ts)
+    assert self._last_trade is None or trade.ts >= self._last_trade.ts
+
+    self.front.add_price(trade.price)
+    self._last_trade = trade
+
+  def eval(self) -> float:
+    if not self.is_full():
+      return self._default_vol
+
+    highs = []
+    lows = []
+    total_ns = NSecs(0)
+
+    for i in range(len(self._candles) - 1):
+      cur = self._candles[i]
+      prev = self._candles[i + 1]
+      highs.append(max(cur.high, prev.high))
+      lows.append(min(cur.low, prev.low))
+      timespan = cur.end_ts - prev.start_ts
+      assert timespan > 0, (cur, prev, timespan)
+      total_ns += timespan
+
+    lows = np.array(lows, dtype=float)
+    highs = np.array(highs, dtype=float)
+    assert lows.shape == highs.shape, (lows, highs)
+    assert np.all(0 < lows <= highs), (lows, highs)
+
+    log_price_diffs = np.log(highs / lows)
+    assert np.all(log_price_diffs > 0), log_price_diffs
+
+    numer = np.sum(log_price_diffs ** 2) * NS_PER_YEAR
+    denom = 4.0 * np.log(2) * total_ns
+    assert numer > 0 and denom > 0, (numer, denom)
+    return np.sqrt(numer / denom)
 
 
-class ConfidenceInterval:
+class ConfidenceModel:
 
-  def __init__(self, candle_width_minutes, ncandles, min_confidence_interval):
-    self.vol_model = VolatilityModel(candle_width_minutes, ncandles)
-    self.min_confidence_interval = min_confidence_interval
-    self._last_trade_time = 0
-    self._last_trade_price = 0
-    self._high_price_since_last_eval = None
-    self._low_price_since_last_eval = None
+  def __init__(
+      self,
+      vol_model: VolatilityModel,
+      *,
+      min_conf: Confidence,
+      min_slot_ns: NSecs = None,
+  ):
+    if min_slot_ns is None:
+      min_slot_ns = scale_time(NS_PER_MS, 500)
+    assert min_conf >= 0, min_conf
+    assert min_slot_ns >= 0, min_slot_ns
+    self._vol_model = vol_model
+    self._min_conf = min_conf
+    self._min_slot_ns: NSecs = min_slot_ns
+    self._range_since_eval = HighLowTracker()
 
-  def add_trade(self, trade_time, price):
-    self.vol_model.add_trade(trade_time, price)
-    self._last_trade_time = trade_time
-    self._last_trade_price = price
-    if self._low_price_since_last_eval is None or price < self._low_price_since_last_eval:
-      self._low_price_since_last_eval = price
-    if self._high_price_since_last_eval is None or price > self._high_price_since_last_eval:
-      self._high_price_since_last_eval = price
+  @property
+  def last_trade(self) -> PriceTime:
+    return self._vol_model.last_trade
 
-  def get_confidence_interval(self, eval_time, min_slot_time = 500 * 10 ** 6):
-    time_since_last_trade = eval_time - self._last_trade_time
-    assert time_since_last_trade >= 0
-    time_since_last_trade = max(time_since_last_trade, min_slot_time)
-    # calculate the volatility-model based confidence interval
-    confidence_interval_bps = self.vol_model.volatility * np.sqrt(time_since_last_trade / NS_PER_YEAR)
-    confidence_interval_price = max(confidence_interval_bps * self._last_trade_price, self.min_confidence_interval)
-    # now check it against the price range traded since the last evaluation (this let's us flare out on microbursts)
-    if self._low_price_since_last_eval is not None and self._high_price_since_last_eval is not None:
-      spread = self._high_price_since_last_eval - self._low_price_since_last_eval
-      confidence_interval_price = max(confidence_interval_price, spread / 2)
-    self._low_price_since_last_eval = None
-    self._high_price_since_last_eval = None
-    return confidence_interval_price
+  def add_trade(self, trade: PriceTime):
+    self._vol_model.add_trade(trade)
+    self._range_since_eval.add_price(trade.price)
+
+  def reset_price_range(self):
+    self._range_since_eval.reset()
+
+  def ns_since_last_trade(self, cur_ts: Timestamp) -> NSecs:
+    last_ts = self._vol_model.last_trade.ts
+    assert last_ts is not None, cur_ts
+    delta = diff_timestamps(cur_ts, last_ts)
+    assert delta > 0, (cur_ts, delta)
+    return max(delta, self._min_slot_ns)
+
+  def eval_at_time(self, ts: Timestamp) -> Confidence:
+    conf = self.peek_at_time(ts)
+    self.reset_price_range()
+    return conf
+
+  def peek_at_time(self, ts: Timestamp) -> Confidence:
+    ns_since_last_trade = self.ns_since_last_trade(ts)
+    years_since_last_trade = float(ns_since_last_trade) / NS_PER_YEAR
+
+    # Calculate the volatility-model based confidence interval.
+    vol = self._vol_model.eval()
+    ci_bps = vol * np.sqrt(years_since_last_trade)
+    ci_price = ci_bps * self._vol_model.last_trade.price
+
+    # Now check it against the price range traded since the last evaluation.
+    # This let's us flare out on microbursts.
+    spread = self._range_since_eval.spread
+    if spread is not None:
+      ci_price = max(ci_price, spread / 2.0)
+
+    return max(ci_price, self._min_conf)
 
 
 class PricingModel:
@@ -128,26 +262,42 @@ class PricingModel:
     at that point we publish status UNKNOWN. I think ~60s is a reasonable number to use for this
   """
 
-  def __init__(self, candle_width_minutes, ncandles, min_confidence_interval, timeout_seconds):
-    self.confidence_model = ConfidenceInterval(candle_width_minutes, ncandles, min_confidence_interval)
-    self.timeout_ns = timeout_seconds * 10 ** 9
-    self._last_trade_price = 0
-    self._last_trade_time = 0
-    self.status = 'Unknown'
+  def __init__(
+      self,
+      conf_model: ConfidenceModel,
+      *,
+      timeout_ns: NSecs,
+  ):
+    self._conf_model = conf_model
+    self._timeout_ns = timeout_ns
+    self._status: Status = Status.UNKNOWN
 
-  def add_trade(self, trade_time, price):
-    self.confidence_model.add_trade(trade_time, price)
-    self._last_trade_price = price
-    self._last_trade_time = trade_time
-    self.status = 'Trading'
+  @property
+  def last_trade(self) -> PriceTime:
+    return self._conf_model.last_trade
 
-  def evaluate(self, eval_time):
-    price = 0
-    confidence_interval = 0
-    if self.status != 'Unknown':
-      if eval_time - self._last_trade_time > self.timeout_ns:
-        self.status = 'Unknown'
-      else:
-        confidence_interval = self.confidence_model.get_confidence_interval(eval_time)
-        price = self._last_trade_price
-    return price, confidence_interval, self.status == 'Trading'
+  def add_trade(self, trade: PriceTime):
+    self._conf_model.add_trade(trade)
+    self._status: Status = Status.TRADING
+
+  def is_trading(self) -> bool:
+    trading = self._status == Status.TRADING
+    assert trading or self._status == Status.UNKNOWN
+    return trading
+
+  def eval_at_time(self, ts: Timestamp) -> Optional[PriceConf]:
+    ret = self.peek_at_time(ts)
+    if ret is None:
+      self._status = Status.UNKNOWN
+    else:
+      self._conf_model.reset_price_range()
+    return ret
+
+  def peek_at_time(self, ts: Timestamp) -> Optional[PriceConf]:
+    ret = None
+    if self.is_trading():
+      last_trade = self.last_trade
+      if ts - last_trade.ts <= self._timeout_ns:
+        conf = self._conf_model.peek_at_time(ts)
+        ret = PriceConf(last_trade.price, conf)
+    return ret
