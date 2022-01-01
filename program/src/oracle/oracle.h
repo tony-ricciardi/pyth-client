@@ -360,7 +360,7 @@ typedef struct sysvar_clock
 static_assert( sizeof( sysvar_clock_t ) == 40, "" );
 
 // compare if two pub_keys (accounts) are the same
-inline bool pc_pub_key_equal( pc_pub_key_t *p1, pc_pub_key_t *p2 )
+inline bool pc_pub_key_equal( const pc_pub_key_t *p1, const pc_pub_key_t *p2 )
 {
   return p1->k8_[0] == p2->k8_[0] &&
          p1->k8_[1] == p2->k8_[1] &&
@@ -369,7 +369,7 @@ inline bool pc_pub_key_equal( pc_pub_key_t *p1, pc_pub_key_t *p2 )
 }
 
 // check for null (zero) public key
-inline bool pc_pub_key_is_zero( pc_pub_key_t *p )
+inline bool pc_pub_key_is_zero( const pc_pub_key_t *p )
 {
   return p->k8_[0] == 0UL &&
          p->k8_[1] == 0UL &&
@@ -384,7 +384,7 @@ inline void pc_pub_key_set_zero( pc_pub_key_t *p )
 }
 
 // assign one pub_key from another
-inline void pc_pub_key_assign( pc_pub_key_t *tgt, pc_pub_key_t *src )
+inline void pc_pub_key_assign( pc_pub_key_t *tgt, const pc_pub_key_t *src )
 {
   tgt->k8_[0] = src->k8_[0];
   tgt->k8_[1] = src->k8_[1];

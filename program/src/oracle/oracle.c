@@ -5,14 +5,14 @@
 #include "oracle.h"
 #include "upd_aggregate.h"
 
-static bool valid_funding_account( SolAccountInfo *ka )
+static bool valid_funding_account( const SolAccountInfo *ka )
 {
   return ka->is_signer &&
          ka->is_writable;
 }
 
-static bool valid_signable_account( SolParameters *prm,
-                                    SolAccountInfo *ka,
+static bool valid_signable_account( const SolParameters *prm,
+                                    const SolAccountInfo *ka,
                                     uint64_t dlen )
 {
   return ka->is_signer &&
@@ -21,8 +21,8 @@ static bool valid_signable_account( SolParameters *prm,
          ka->data_len >= dlen;
 }
 
-static bool valid_writable_account( SolParameters *prm,
-                                    SolAccountInfo *ka,
+static bool valid_writable_account( const SolParameters *prm,
+                                    const SolAccountInfo *ka,
                                     uint64_t dlen )
 {
   return ka->is_writable &&
