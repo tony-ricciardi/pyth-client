@@ -16,7 +16,7 @@ include_directories( program/src/ )
 
 # gcc compiler/linker flags
 add_compile_options( -ggdb -Wall -Wextra -Wsign-conversion -Werror -m64 )
-set( CMAKE_CXX_FLAGS -std=c++11 )
+set( CMAKE_CXX_FLAGS -std=c++17 )
 set( CMAKE_C_FLAGS -std=c99 )
 set( CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -pthread")
 
@@ -40,7 +40,7 @@ set( PC_SRC
   pc/rpc_client.cpp;
   pc/user.cpp;
   program/src/oracle/sort.c
-  )
+)
 
 set( PC_HDR
   pc/attr_id.hpp;
@@ -58,13 +58,29 @@ set( PC_HDR
   pc/net_socket.hpp;
   pc/replay.hpp;
   pc/request.hpp;
-  pc/rpc_client.hpp
-  pc/user.hpp )
+  pc/rpc_client.hpp;
+  pc/user.hpp
+)
+
+set( PC_EXT_SRC
+  pc/ext/candle_model.cpp;
+  pc/ext/price_model.cpp;
+  pc/ext/verify.cpp
+)
+
+set( PC_EXT_HDR
+  pc/ext/candle_model.hpp;
+  pc/ext/price_model.hpp;
+  pc/ext/timestamp.hpp;
+  pc/ext/verify.hpp
+)
 
 add_library( pc STATIC ${PC_SRC} )
+add_library( pcext STATIC ${PC_EXT_SRC} )
 
 # dependencies
 set( PC_DEP pc ssl crypto z zstd )
+set( PC_EXT_DEP pcext ${PC_DEP} )
 
 #
 # applications
@@ -85,7 +101,7 @@ target_link_libraries( pyth_tx ${PC_DEP} )
 # install
 #
 
-install( TARGETS pc DESTINATION lib )
+install( TARGETS pc pcext DESTINATION lib )
 install( TARGETS pyth pyth_admin pythd pyth_csv pyth_tx DESTINATION bin )
 install( FILES ${PC_HDR} DESTINATION include/pc )
 install( FILES program/src/oracle/oracle.h DESTINATION include/oracle )
@@ -107,9 +123,14 @@ add_executable( test_twap pctest/test_twap.cpp )
 target_link_libraries( test_twap ${PC_DEP} )
 add_executable( leader_stats pctest/leader_stats.cpp )
 target_link_libraries( leader_stats ${PC_DEP} )
+add_executable( test_price_model ../pctest/test_price_model.cpp )
+target_link_libraries( test_price_model ${PC_EXT_DEP} )
+add_executable( test_price_model_unit ../pctest/test_price_model_unit.cpp )
+target_link_libraries( test_price_model_unit ${PC_EXT_DEP} )
 
 add_test( test_unit test_unit )
 add_test( test_net test_net )
+add_test( test_price_model_unit test_price_model_unit )
 
 
 #

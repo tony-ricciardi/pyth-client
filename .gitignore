@@ -4,5 +4,5 @@ debug
 target
 cmake-build-*
 Cargo.lock
-/venv
+.venv
 .pytest_cache

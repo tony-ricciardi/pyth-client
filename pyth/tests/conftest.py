@@ -2,9 +2,14 @@ import argparse
 import glob
 import inspect
 import json
+import logging
+import logging.config
 import os
+import shutil
 import subprocess
 import time
+
+from dataclasses import dataclass
 from os import fdopen
 from shutil import rmtree
 from subprocess import DEVNULL, Popen, check_call, check_output
@@ -21,7 +26,49 @@ __this_file = os.path.abspath(__file__)
 __this_dir = os.path.dirname(__this_file)
 
 
+@dataclass(frozen=True)
+class Args:
+
+    inplace: bool = False
+    verbose: bool = False
+    tmpdir: str = None
+    keeptmp: bool = None
+
+    @property
+    def loglevel(self):
+        return logging.DEBUG if self.verbose else logging.INFO
+
+    @classmethod
+    def get_parser(cls):
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--inplace', action='store_true')
+        parser.add_argument('--verbose', '-v', action='store_true')
+        parser.add_argument('--tmpdir')
+        parser.add_argument('--keeptmp', action='store_true')
+        return parser
+
+    @classmethod
+    def parse(cls):
+        kwargs = vars(cls.get_parser().parse_args())
+        return cls(**kwargs)
+
+
 class BaseTest:
+
+    _args = Args()
+    _logger = logging.getLogger('pyth.tests')
+
+    @property
+    def args(self):
+        return self._args
+
+    @property
+    def logger(self):
+        return self._logger
+
+    @classmethod
+    def init_logger(cls, args: Args):
+        logging.basicConfig(level=args.loglevel)
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
@@ -65,44 +112,55 @@ class BaseTest:
     @classmethod
     def get_test_method(cls, input_path: str):
 
-        def test_func(self: BaseTest, *, inplace: bool = False):
+        # tmp_path is a builtin pytest fixture (type pathlib.Path):
+        # https://docs.pytest.org/en/6.2.x/reference.html#std-fixture-tmp_path
+        def test_func(self: BaseTest, tmp_path: str):
             output_path = self.get_output_path(input_path)
-            self.run_test(input_path, output_path, inplace=inplace)
+            self.run_test(input_path, output_path, str(tmp_path))
 
         test_id = cls.get_test_id(input_path)
         test_func.__name__ = 'test_' + test_id
         return test_func
 
     @classmethod
-    def get_arg_parser(cls):
-        parser = argparse.ArgumentParser()
-        parser.add_argument('--inplace', action='store_true')
-        return parser
-
-    @classmethod
     def main(cls):
-        parser = cls.get_arg_parser()
-        args = parser.parse_args()
-        inst = cls()
-        funcs = inst.gen_test_funcs()
-        for func in funcs:
-            func(inst, inplace=args.inplace)
+        cls._args = cls._args.parse()
+        cls.init_logger(cls._args)
+        cls().run_tests()
 
-    def get_subprocess_args(self, input_path: str):
+    def run_tests(self):
+        clsname = self.__class__.__name__
+        tmp_root = mkdtemp(dir=self.args.tmpdir)
+        try:
+            for name, member in inspect.getmembers(self):
+                if name.startswith('test_') and callable(member):
+                    self.logger.info(f'running {clsname}.{name}')
+                    tmp_path = os.path.join(tmp_root, name)
+                    os.mkdir(tmp_path)
+                    member(tmp_path=tmp_path)
+        finally:
+            if not self.args.keeptmp:
+                shutil.rmtree(tmp_root)
+
+    def get_subprocess_args(self, input_path: str, tmp_path: str):
         cmd = 'test_' + self.get_subdir()
         return [cmd, input_path]
 
-    def gen_output(self, input_path: str) -> str:
-        args = self.get_subprocess_args(input_path)
+    def gen_output(self, input_path: str, tmp_path: str) -> str:
+        args = self.get_subprocess_args(input_path, tmp_path)
+        self.logger.debug(' '.join(args))
         output = subprocess.check_output(args)
         return output.decode()
 
-    def run_test(self, input_path: str, output_path: str, *, inplace: bool):
+    def get_expected_output(self, output_path: str):
         with open(output_path, 'r') as f:
-            expected = f.read()
-        actual = self.gen_output(input_path)
+            return f.read()
 
-        if inplace:
+    def run_test(self, input_path: str, output_path: str, tmp_path: str):
+        expected = self.get_expected_output(output_path)
+        actual = self.gen_output(input_path, tmp_path)
+
+        if self.args.inplace:
             if actual != expected:
                 with open(output_path, 'w') as f:
                     f.write(actual)
@@ -167,7 +225,7 @@ def solana_keygen():
     output = output.splitlines()
     output = [line for line in output if 'pubkey' in line][0]
     output = output.split('pubkey: ')[1]
-    yield (output, path)
+    yield output, path
     rmtree(cfg_dir)
 
 

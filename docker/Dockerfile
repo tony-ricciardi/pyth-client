@@ -15,6 +15,7 @@ RUN apt-get install -qq \
   git \
   libzstd1 \
   libzstd-dev \
+  python3-pandas \
   python3-pytest \
   python3-websockets \
   sudo \
